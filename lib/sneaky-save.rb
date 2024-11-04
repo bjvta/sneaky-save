@@ -3,7 +3,6 @@
 # mailto:kgoslar@partyearth.com
 #++
 module SneakySave
-
   # Saves the record without running callbacks/validations.
   # Returns true if the record is changed.
   # @note - Does not reload updated record by default.
@@ -42,27 +41,59 @@ module SneakySave
       self.id = sneaky_connection.next_sequence_value(self.class.sequence_name)
     end
 
-    attributes_values = sneaky_attributes_values
+    # attributes_values = sneaky_attributes_values
+    attributes_values = get_attribute_values
+
+    # puts attributes_values
 
     # Remove the id field for databases like Postgres
     # which fail with id passed as NULL
     if id.nil? && !prefetch_pk_allowed
-      attributes_values.reject! { |key, _| key.name == 'id' }
+      attributes_values.reject! { |key, _| key.try(:name) == 'id' }
     end
 
     if attributes_values.empty?
       new_id = self.class.unscoped.insert(sneaky_connection.empty_insert_statement_value)
     else
-      new_id = self.class.unscoped.insert(attributes_values)
+      new_id = insert_record(attributes_values)
     end
 
     @new_record = false
     !!(self.id ||= new_id)
   end
 
+  def insert_record(attributes_values)
+    # Get the table name
+    table_name = self.class.table_name
+
+    # Format the columns and values for SQL
+    # debugger
+    columns = attributes_values.keys.map { |key| self.class.connection.quote_column_name(key) }.join(', ')
+    values = attributes_values.values.map { |value| self.class.connection.quote(value) }.join(', ')
+
+    # Perform the insert operation
+    new_id = self.class.connection.insert("INSERT INTO #{self.class.connection.quote_table_name(table_name)} (#{columns}) VALUES (#{values})")
+
+    # Return the newly inserted id
+    new_id
+  end
+
+  def get_attribute_values
+    # Get the raw attribute values without type casting
+    attributes_values = self.attributes_before_type_cast
+
+    # Handle the case where id is nil and prefetch_pk is not allowed
+    if self.id.nil? && !self.class.connection.prefetch_primary_key?(self.class.table_name)
+      attributes_values.reject! { |key, _| key == 'id' }
+    end
+
+    attributes_values
+  end
+
   # Performs update query without running callbacks
   # @return [false, true]
   def sneaky_update
+    ActiveRecord::Base.use_yaml_unsafe_load = true
     return true if changes.empty?
 
     pk = self.class.primary_key
@@ -82,13 +113,17 @@ module SneakySave
       update_all(changed_attributes).zero?
   end
 
-  def sneaky_attributes_values
-    if sneaky_new_rails?
-      send :arel_attributes_with_values_for_create, attribute_names
-    else
-      send :arel_attributes_values
-    end
-  end
+  # def sneaky_attributes_values
+  #   if sneaky_new_rails?
+  #     send :arel_attributes_with_values_for_create, attribute_names
+  #     attributes_hash = attributes.except('id')
+
+  #     # Return the attributes as a struct using OpenStruct
+  #     OpenStruct.new(attributes_hash)
+  #   else
+  #     send :arel_attributes_values
+  #   end
+  # end
 
   def sneaky_update_fields
     changes.keys.each_with_object({}) do |field, result|
